@@ -40,9 +40,6 @@ nmap <buffer> <localleader>o <Plug>(quarto-slides-open)
 Set `g:quarto_slides_pane_percent` (default `25`) to change the width of the
 preview pane.
 
-A template deck and a `slides` shell command live in
-[roumail/quarto-slides](https://github.com/roumail/quarto-slides).
-
 ## Tests
 
 The specs in [vim-suite](https://github.com/vimoured/vim-suite) define what it
