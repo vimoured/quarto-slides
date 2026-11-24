@@ -21,6 +21,7 @@ nnoremap <silent> <Plug>(quarto-slides-open) <Cmd>call quarto_slides#open()<CR>
 
 augroup quarto_slides
   autocmd!
-  " Don't leave a preview server behind
-  autocmd VimLeavePre * call quarto_slides#stop()
+  " Don't leave a preview server behind. Only once the autoload file is in:
+  " before that nothing runs, and at exit it may no longer be found
+  autocmd VimLeavePre * if exists('*quarto_slides#stop') | call quarto_slides#stop() | endif
 augroup END
