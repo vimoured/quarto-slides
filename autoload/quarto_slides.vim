@@ -1,22 +1,12 @@
-let s:is_wezterm = ($TERM_PROGRAM ==# 'WezTerm' || !empty($WEZTERM_PANE))
-let s:is_tmux = !empty($TMUX)
-
-" The running preview: {'kind': 'tmux'|'wezterm'|'term', 'id': ..., 'file': ...}
+" The running preview: {'job': ..., 'file': ...}. Its output goes to s:log,
+" kept after it ends until the next preview starts
 let s:preview = {}
+let s:log = ''
 
 function! s:Error(msg) abort
   echohl ErrorMsg
   echom 'quarto-slides: ' . a:msg
   echohl None
-endfunction
-
-function! s:WeztermBin() abort
-  for l:bin in ['wezterm', 'wezterm.exe']
-    if executable(l:bin)
-      return l:bin
-    endif
-  endfor
-  return ''
 endfunction
 
 " The deck in the current buffer, or '' with an error
@@ -29,7 +19,6 @@ function! s:Deck() abort
   return l:file
 endfunction
 
-" quarto's full path: a pane WezTerm spawns gets WezTerm's PATH, not the shell's
 function! s:Quarto() abort
   let l:quarto = exepath('quarto')
   if empty(l:quarto)
@@ -38,59 +27,19 @@ function! s:Quarto() abort
   return l:quarto
 endfunction
 
-function! s:StartTmux(quarto, file) abort
-  let l:cmd = shellescape(a:quarto) . ' preview ' . shellescape(a:file)
-  let l:id = trim(system(printf(
-        \ 'tmux split-window -d -h -l %d%% -c %s -P -F "#{pane_id}" %s',
-        \ g:quarto_slides_pane_percent,
-        \ shellescape(fnamemodify(a:file, ':h')),
-        \ shellescape(l:cmd))))
-  return v:shell_error ? {} : {'kind': 'tmux', 'id': l:id}
-endfunction
-
-function! s:StartWezterm(quarto, file) abort
-  let l:bin = s:WeztermBin()
-  let l:id = trim(system(printf(
-        \ '%s cli split-pane --right --percent %d --cwd %s -- %s preview %s',
-        \ l:bin,
-        \ g:quarto_slides_pane_percent,
-        \ shellescape(fnamemodify(a:file, ':h')),
-        \ shellescape(a:quarto),
-        \ shellescape(a:file))))
-  if v:shell_error || l:id !~# '^\d\+$'
-    return {}
+" Only the running preview's exit is news: one stopped or replaced isn't
+function! s:Exited(job, status) abort
+  if empty(s:preview) || s:preview.job isnot# a:job
+    return
   endif
-  " split-pane focuses the new pane; hand focus back to Vim
-  if !empty($WEZTERM_PANE)
-    call system(l:bin . ' cli activate-pane --pane-id ' . $WEZTERM_PANE)
+  let s:preview = {}
+  if a:status != 0
+    call s:Error('quarto preview exited (' . a:status . '), :SlidesLog shows why')
   endif
-  return {'kind': 'wezterm', 'id': l:id}
-endfunction
-
-function! s:StartTerm(quarto, file) abort
-  let l:buf = term_start([a:quarto, 'preview', a:file], {
-        \ 'hidden': 1,
-        \ 'term_name': '__quarto_preview',
-        \ 'term_finish': 'close',
-        \ 'cwd': fnamemodify(a:file, ':h'),
-        \ })
-  return l:buf > 0 ? {'kind': 'term', 'id': l:buf} : {}
 endfunction
 
 function! quarto_slides#running() abort
-  if empty(s:preview)
-    return 0
-  endif
-  if s:preview.kind ==# 'term'
-    return bufexists(s:preview.id) && term_getstatus(s:preview.id) =~# 'running'
-  elseif s:preview.kind ==# 'tmux'
-    " Not display-message -t: for a pane that's gone it falls back to the
-    " current one and succeeds
-    return index(systemlist("tmux list-panes -a -F '#{pane_id}'"), s:preview.id) >= 0
-  endif
-  " wezterm: is the pane still in the list?
-  let l:panes = system(s:WeztermBin() . ' cli list --format json')
-  return !v:shell_error && l:panes =~# '"pane_id":\s*' . s:preview.id . '\>'
+  return !empty(s:preview) && job_status(s:preview.job) ==# 'run'
 endfunction
 
 function! quarto_slides#start() abort
@@ -103,39 +52,29 @@ function! quarto_slides#start() abort
     call quarto_slides#stop()
   endif
 
-  let s:preview = {}
-  if s:is_tmux
-    let s:preview = s:StartTmux(l:quarto, l:file)
-  elseif s:is_wezterm && !empty(s:WeztermBin())
-    let s:preview = s:StartWezterm(l:quarto, l:file)
-  endif
-  if empty(s:preview)
-    " No multiplexer (or it failed): a hidden Vim terminal, :ls! shows it
-    let s:preview = s:StartTerm(l:quarto, l:file)
-  endif
-  if empty(s:preview)
+  let s:log = tempname()
+  let l:job = job_start([l:quarto, 'preview', l:file], {
+        \ 'cwd': fnamemodify(l:file, ':h'),
+        \ 'in_io': 'null',
+        \ 'out_io': 'file', 'out_name': s:log,
+        \ 'err_io': 'out',
+        \ 'exit_cb': function('s:Exited'),
+        \ })
+  if job_status(l:job) !=# 'run'
     call s:Error('could not start quarto preview')
     return
   endif
-  let s:preview.file = l:file
-  echo 'Slides preview: ' . fnamemodify(l:file, ':t') . ' (' . s:preview.kind . '), :w reloads the browser'
+  let s:preview = {'job': l:job, 'file': l:file}
+  echo 'Slides preview: ' . fnamemodify(l:file, ':t') . ', :w reloads the browser'
 endfunction
 
 function! quarto_slides#stop() abort
   if empty(s:preview)
     return
   endif
-  if s:preview.kind ==# 'term'
-    if bufexists(s:preview.id)
-      call job_stop(term_getjob(s:preview.id))
-      silent! execute 'bwipeout!' s:preview.id
-    endif
-  elseif s:preview.kind ==# 'tmux'
-    call system('tmux kill-pane -t ' . s:preview.id)
-  else
-    call system(s:WeztermBin() . ' cli kill-pane --pane-id ' . s:preview.id)
-  endif
+  let l:job = s:preview.job
   let s:preview = {}
+  call job_stop(l:job)
   echo 'Slides preview stopped'
 endfunction
 
@@ -145,6 +84,19 @@ function! quarto_slides#toggle_preview() abort
   else
     call quarto_slides#start()
   endif
+endfunction
+
+" What quarto preview has written so far, in a vim-draft scratch
+function! quarto_slides#log() abort
+  if empty(globpath(&runtimepath, 'autoload/roumail_draft.vim', 1))
+    call s:Error(':SlidesLog needs vim-draft, which is not installed')
+    return
+  endif
+  if empty(s:log) || !filereadable(s:log)
+    call s:Error('no preview has run yet')
+    return
+  endif
+  execute 'ScratchBuf' fnameescape(s:log)
 endfunction
 
 " quarto render into the quickfix list (vim-dispatch), or a terminal split

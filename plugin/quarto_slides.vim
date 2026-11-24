@@ -1,16 +1,13 @@
-" quarto-slides: write reveal.js decks in Vim. `quarto preview` runs in a
-" WezTerm or tmux pane next to Vim (or a hidden Vim terminal) and reloads the
-" browser on every :w.
+" quarto-slides: write reveal.js decks in Vim. `quarto preview` runs in the
+" background and reloads the browser on every :w; :SlidesLog shows its output.
 if exists('g:loaded_quarto_slides')
   finish
 endif
 let g:loaded_quarto_slides = 1
 
-" Width of the preview pane, in percent
-let g:quarto_slides_pane_percent = get(g:, 'quarto_slides_pane_percent', 25)
-
 command! SlidesPreview call quarto_slides#toggle_preview()
 command! SlidesStop call quarto_slides#stop()
+command! SlidesLog call quarto_slides#log()
 command! SlidesRender call quarto_slides#render()
 command! SlidesOpen call quarto_slides#open()
 
